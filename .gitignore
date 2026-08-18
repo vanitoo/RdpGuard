@@ -1,0 +1,22 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.log
+
+## IDE
+.vs/
+.vscode/
+
+## Publish
+publish/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Local settings
+appsettings.Local.json
+appsettings.Development.json

@@ -1,0 +1,35 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Publish
+        run: dotnet publish src/RdpGuard.csproj -c Release -o publish/github-actions -r win-x64 --self-contained false
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RdpGuard-win-x64
+          path: publish/github-actions/
