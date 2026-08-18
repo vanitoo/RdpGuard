@@ -64,6 +64,46 @@ Before disabling DryRun, put every management/admin address or subnet into `Trus
 
 The program watches new events in real time; it does not repeatedly rescan the last 10 minutes of the Security log.
 
+## History
+
+### PowerShell prototype (`PS/`)
+
+Before the C# service, RdpGuard was implemented as a PowerShell script:
+
+- **File**: `PS/rdp_block_service.ps1`
+- **Architecture**: pure PowerShell, no .NET dependencies
+- **Features**:
+  - Parses Security Event Log (Event ID 4625, LogonType 10)
+  - Adaptive threshold (fast / medium / hard attacks)
+  - Windows Firewall blocking via `New-NetFirewallRule` / `Set-NetFirewallRule`
+  - State persistence in `rdp_block_state.json`
+  - Auto-unblock after configurable period
+  - Trusted IP / CIDR whitelist
+  - Dry-run mode
+  - Optional email / Telegram notifications
+
+The PowerShell version is kept for reference and for environments where .NET is not available.
+It can be run directly via PowerShell or installed as a service using NSSM:
+
+```powershell
+nssm install RDPBlocker
+    Path:        powershell.exe
+    Arguments:   -ExecutionPolicy Bypass -File C:\ps\rdp_block_service.ps1
+```
+
+---
+
+### C# service (`src/`)
+
+The current production version is a .NET 8 Windows Service with:
+
+- Real-time `EventLogWatcher` (no polling)
+- RDP Operational log correlation for LogonType 3 (NLA)
+- Pending / applied firewall state with retry
+- 24-hour statistics
+- Structured logging
+- Published as a single-file win-x64 application
+
 ## Logging / diagnostics
 
 New diagnostics options in `appsettings.json`:
