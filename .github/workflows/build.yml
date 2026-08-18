@@ -1,5 +1,61 @@
-# Создать тег
-git tag v1.0.0
+name: Build RdpGuard
 
-# Отправить тег на GitHub
-git push origin v1.0.0
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore ./src/RdpGuard.csproj
+
+      - name: Build
+        run: dotnet build ./src/RdpGuard.csproj --configuration Release --no-restore
+
+      - name: Publish win-x64
+        run: >-
+          dotnet publish ./src/RdpGuard.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          --output ./publish/win-x64
+
+      - name: Create ZIP
+        shell: pwsh
+        run: Compress-Archive -Path ./publish/win-x64/* -DestinationPath ./RdpGuard-win-x64.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RdpGuard-win-x64
+          path: ./RdpGuard-win-x64.zip
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./RdpGuard-win-x64.zip
+          generate_release_notes: true
