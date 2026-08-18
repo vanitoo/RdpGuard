@@ -10,6 +10,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build/release (example: v1.0.0)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -21,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.tag || github.ref }}
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -53,9 +60,17 @@ jobs:
           name: RdpGuard-win-x64
           path: ./RdpGuard-win-x64.zip
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release from pushed tag
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          files: ./RdpGuard-win-x64.zip
+          generate_release_notes: true
+
+      - name: Create GitHub Release from existing tag
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
           files: ./RdpGuard-win-x64.zip
           generate_release_notes: true
