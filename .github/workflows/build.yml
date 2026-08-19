@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build/release (example: v1.1.0)'
+        description: 'Existing tag to build/release (example: v1.0.2)'
         required: false
         type: string
 
@@ -69,6 +69,12 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           --output ./publish/win-x64
 
+      - name: Add service scripts to published package
+        shell: pwsh
+        run: |
+          Copy-Item ./install-service.ps1 ./publish/win-x64/install-service.ps1 -Force
+          Copy-Item ./uninstall-service.ps1 ./publish/win-x64/uninstall-service.ps1 -Force
+
       - name: Create ZIP
         shell: pwsh
         run: Compress-Archive -Path ./publish/win-x64/* -DestinationPath ./RdpGuard-win-x64.zip -Force
@@ -90,15 +96,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Write-Host "Publishing release for tag $env:RELEASE_TAG"
 
+          $assets = @(
+            './RdpGuard-win-x64.zip',
+            './install-service.ps1',
+            './uninstall-service.ps1'
+          )
+
           gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" *> $null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release already exists; replacing ZIP asset."
-            gh release upload $env:RELEASE_TAG ./RdpGuard-win-x64.zip --clobber --repo "${{ github.repository }}"
+            Write-Host "Release already exists; replacing assets."
+            gh release upload $env:RELEASE_TAG @assets --clobber --repo "${{ github.repository }}"
             if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
           }
           else {
             Write-Host "Release does not exist; creating it."
-            gh release create $env:RELEASE_TAG ./RdpGuard-win-x64.zip --verify-tag --generate-notes --title "RdpGuard $env:RELEASE_TAG" --repo "${{ github.repository }}"
+            gh release create $env:RELEASE_TAG @assets --verify-tag --generate-notes --title "RdpGuard $env:RELEASE_TAG" --repo "${{ github.repository }}"
             if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
           }
 
