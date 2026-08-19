@@ -18,11 +18,9 @@ if (Test-Path $stateFile) {
     }
 }
 
-$raw4625 = 0
-$accepted = 0
-$attacks = 0
-$fwApplied = 0
-$fwPending = 0
+$detections24h = 0
+$realBlocks24h = 0
+$pendingBlocks24h = 0
 $attackerIps = New-Object 'System.Collections.Generic.HashSet[string]'
 
 if (Test-Path $logFile) {
@@ -33,20 +31,18 @@ if (Test-Path $logFile) {
         if (-not [datetime]::TryParseExact($line.Substring(0,19), 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$stamp)) { return }
         if ($stamp -lt $since) { return }
 
-        if ($line -like '*| 4625 DETECTED |*') { $raw4625++ }
-        if ($line -like '*| RDP FAILURE ACCEPTED |*') { $accepted++ }
         if ($line -like '*| ATTACK DETECTED |*') {
-            $attacks++
+            $detections24h++
             if ($line -match '(?:^|\|\s)IP=([^\s|]+)') { [void]$attackerIps.Add($Matches[1]) }
-            if ($line -like '*State=Applied*') { $fwApplied++ }
-            if ($line -like '*State=PendingFirewall*') { $fwPending++ }
+            if ($line -like '*State=Applied*') { $realBlocks24h++ }
+            if ($line -like '*State=PendingFirewall*') { $pendingBlocks24h++ }
         }
         if ($line -like '*| FIREWALL RECOVERED |*' -and $line -match 'AppliedPending=(\d+)') {
-            $fwApplied += [int]$Matches[1]
+            $realBlocks24h += [int]$Matches[1]
         }
     }
 }
 
 Write-Host "RdpGuard status" -ForegroundColor Cyan
-Write-Host "Current state: Applied=$applied Pending=$pending Total=$($applied + $pending)"
-Write-Host "Last 24h: Raw4625=$raw4625 AcceptedRdpFailures=$accepted AttacksDetected=$attacks UniqueAttackerIPs=$($attackerIps.Count) FirewallApplied=$fwApplied FirewallPending=$fwPending"
+Write-Host "24H STATS | Detections24h=$detections24h | UniqueAttackIPs24h=$($attackerIps.Count) | RealBlocks24h=$realBlocks24h | PendingBlocks24h=$pendingBlocks24h | CurrentlyBlocked=$applied"
+Write-Host "Current state | Applied=$applied | Pending=$pending | Total=$($applied + $pending)"
