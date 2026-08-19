@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using RdpGuard.Options;
+using System.Reflection;
 using System.Text;
 
 namespace RdpGuard.Services;
@@ -23,6 +24,19 @@ public sealed class FileLogger
         _retentionDays = Math.Max(1, cfg.LogRetentionDays);
         EnsureUtf8Bom();
         CleanupOldLogs();
+
+        // Visually separate each process/service start in the log.
+        BlankLine();
+        var assembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
+        var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString()
+            ?? "unknown";
+        var commit = assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(x => string.Equals(x.Key, "CommitHash", StringComparison.OrdinalIgnoreCase))?.Value
+            ?? "unknown";
+        if (commit.Length > 7) commit = commit[..7];
+        Info($"Version={version}");
+        Info($"Commit={commit}");
     }
 
     public string LogFilePath => _logFile;
