@@ -1,4 +1,4 @@
-name: Build RdpGuard
+name: Build and Release RdpGuard
 
 on:
   push:
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build/release (example: v1.0.0)'
+        description: 'Existing tag to build/release (example: v1.1.0)'
         required: false
         type: string
 
@@ -24,10 +24,29 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      - name: Resolve ref and release tag
+        id: meta
+        shell: pwsh
+        run: |
+          $checkoutRef = "${{ github.ref }}"
+          $releaseTag = ""
+
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.tag }}" -ne "") {
+            $checkoutRef = "${{ inputs.tag }}"
+            $releaseTag = "${{ inputs.tag }}"
+          }
+          elseif ("${{ github.ref }}" -like "refs/tags/v*") {
+            $releaseTag = "${{ github.ref_name }}"
+          }
+
+          "checkout_ref=$checkoutRef" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.tag || github.ref }}
+          ref: ${{ steps.meta.outputs.checkout_ref }}
+          fetch-depth: 0
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -59,18 +78,28 @@ jobs:
         with:
           name: RdpGuard-win-x64
           path: ./RdpGuard-win-x64.zip
+          if-no-files-found: error
 
-      - name: Create GitHub Release from pushed tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ./RdpGuard-win-x64.zip
-          generate_release_notes: true
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Publishing release for tag $env:RELEASE_TAG"
 
-      - name: Create GitHub Release from existing tag
-        if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          files: ./RdpGuard-win-x64.zip
-          generate_release_notes: true
+          gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release already exists; replacing ZIP asset."
+            gh release upload $env:RELEASE_TAG ./RdpGuard-win-x64.zip --clobber --repo "${{ github.repository }}"
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
+          }
+          else {
+            Write-Host "Release does not exist; creating it."
+            gh release create $env:RELEASE_TAG ./RdpGuard-win-x64.zip --verify-tag --generate-notes --title "RdpGuard $env:RELEASE_TAG" --repo "${{ github.repository }}"
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
+          }
+
+          gh release view $env:RELEASE_TAG --repo "${{ github.repository }}"
