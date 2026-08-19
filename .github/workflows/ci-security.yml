@@ -1,0 +1,83 @@
+name: CI and Security
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  build-and-audit:
+    name: Build, analyzers and NuGet audit
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore ./src/RdpGuard.csproj
+
+      - name: Build with .NET analyzers
+        run: >-
+          dotnet build ./src/RdpGuard.csproj
+          --configuration Release
+          --no-restore
+          -p:EnableNETAnalyzers=true
+          -p:AnalysisLevel=latest
+
+      - name: Check vulnerable NuGet packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = dotnet list ./src/RdpGuard.csproj package --vulnerable --include-transitive
+          $output | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            throw "NuGet vulnerability audit command failed."
+          }
+          if ($output -match 'has the following vulnerable packages' -or $output -match '^\s*>\s') {
+            throw "Vulnerable NuGet package(s) detected."
+          }
+
+  codeql:
+    name: CodeQL C# security scan
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          build-mode: manual
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build for CodeQL
+        run: |
+          dotnet restore ./src/RdpGuard.csproj
+          dotnet build ./src/RdpGuard.csproj --configuration Release --no-restore
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:csharp'
