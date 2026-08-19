@@ -24,29 +24,51 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Resolve ref and release tag
-        id: meta
-        shell: pwsh
-        run: |
-          $checkoutRef = "${{ github.ref }}"
-          $releaseTag = ""
-
-          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.tag }}" -ne "") {
-            $checkoutRef = "${{ inputs.tag }}"
-            $releaseTag = "${{ inputs.tag }}"
-          }
-          elseif ("${{ github.ref }}" -like "refs/tags/v*") {
-            $releaseTag = "${{ github.ref_name }}"
-          }
-
-          "checkout_ref=$checkoutRef" >> $env:GITHUB_OUTPUT
-          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.meta.outputs.checkout_ref }}
           fetch-depth: 0
+
+      - name: Resolve release tag
+        id: meta
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $releaseTag = ''
+
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and "${{ inputs.tag }}" -ne '') {
+            $releaseTag = "${{ inputs.tag }}"
+            git fetch --tags --force
+            git checkout $releaseTag
+            if ($LASTEXITCODE -ne 0) { throw "Unable to checkout requested tag $releaseTag" }
+          }
+          elseif ("${{ github.ref }}" -like 'refs/tags/v*') {
+            $releaseTag = "${{ github.ref_name }}"
+          }
+          elseif ("${{ github.event_name }}" -eq 'push' -and "${{ github.ref }}" -eq 'refs/heads/main') {
+            [xml]$project = Get-Content ./src/RdpGuard.csproj -Raw
+            $version = [string]$project.Project.PropertyGroup.Version
+            if ([string]::IsNullOrWhiteSpace($version)) { throw 'Version is missing in src/RdpGuard.csproj' }
+            $releaseTag = "v$version"
+
+            git fetch --tags --force
+            $existing = git tag -l $releaseTag
+            if (-not $existing) {
+              Write-Host "Creating release tag $releaseTag for commit $env:GITHUB_SHA"
+              git config user.name 'github-actions[bot]'
+              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+              git tag -a $releaseTag -m "RdpGuard $releaseTag"
+              git push origin $releaseTag
+              if ($LASTEXITCODE -ne 0) { throw "Unable to push tag $releaseTag" }
+            }
+            else {
+              Write-Host "Tag $releaseTag already exists; release assets will be refreshed."
+            }
+          }
+
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -104,12 +126,12 @@ jobs:
 
           gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" *> $null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release already exists; replacing assets."
+            Write-Host 'Release already exists; replacing assets.'
             gh release upload $env:RELEASE_TAG @assets --clobber --repo "${{ github.repository }}"
             if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
           }
           else {
-            Write-Host "Release does not exist; creating it."
+            Write-Host 'Release does not exist; creating it.'
             gh release create $env:RELEASE_TAG @assets --verify-tag --generate-notes --title "RdpGuard $env:RELEASE_TAG" --repo "${{ github.repository }}"
             if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
           }
