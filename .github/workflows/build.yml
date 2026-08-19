@@ -29,6 +29,8 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
 
     steps:
       - name: Checkout
@@ -94,9 +96,7 @@ jobs:
             if ($requested -in @('patch','minor','major')) { $bump = $requested }
           }
           else {
-            $message = @'
-${{ github.event.head_commit.message }}
-'@
+            $message = [string]$env:COMMIT_MESSAGE
             if ($message -match '(?i)\[major\]') { $bump = 'major' }
             elseif ($message -match '(?i)\[minor\]') { $bump = 'minor' }
           }
@@ -112,10 +112,7 @@ ${{ github.event.head_commit.message }}
               $patch = 0
             }
             default {
-              if ($previousTag -eq '<none>') {
-                # First release starts at v1.0.0.
-              }
-              else {
+              if ($previousTag -ne '<none>') {
                 $patch++
               }
             }
