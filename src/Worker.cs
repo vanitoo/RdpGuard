@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Eventing.Reader;
 using System.Net;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Microsoft.Extensions.Options;
@@ -44,16 +45,20 @@ public sealed class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _log.Info($"SERVICE STARTED | DryRun={_options.DryRun} | RDP port={_options.RdpLocalPort} | LogEveryFailure={_options.LogEveryFailure} | AcceptNlaLogonType3={_options.AcceptNlaLogonType3} | RequireRdpCorrelation={_options.RequireRdpCorrelationForNla} | CorrelationWindow={_options.RdpCorrelationWindowSeconds}s | Heartbeat={_options.HeartbeatSeconds}s");
+        var version = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
+            ?? "unknown";
+
+        _log.Info($"SERVICE STARTED | Version={version} | DryRun={_options.DryRun} | RDP port={_options.RdpLocalPort} | LogEveryFailure={_options.LogEveryFailure} | AcceptNlaLogonType3={_options.AcceptNlaLogonType3} | RequireRdpCorrelation={_options.RequireRdpCorrelationForNla} | CorrelationWindow={_options.RdpCorrelationWindowSeconds}s | Heartbeat={_options.HeartbeatSeconds}s");
 
         var startupState = _state.Snapshot();
         var startupApplied = startupState.Count(x => string.Equals(x.Status, "Applied", StringComparison.OrdinalIgnoreCase));
         var startupPending = startupState.Count - startupApplied;
-        _log.Info($"STARTUP CONFIG | RDP port={_options.RdpLocalPort} | Fast={_options.FastAttackAttempts}/{_options.FastAttackSeconds}s | Medium={_options.MediumAttackAttempts}/{_options.MediumAttackMinutes}m | Hard={_options.HardLimitAttempts}/{_options.HardLimitWindowMinutes}m | UnblockAfter={_options.UnblockAfterDays}d | FirewallRetry={_options.FirewallRetryIntervalSeconds}s | CorrelationWindow={_options.RdpCorrelationWindowSeconds}s | TrustedNetworks={_options.TrustedNetworks.Count}");
+        _log.Info($"STARTUP CONFIG | Version={version} | RDP port={_options.RdpLocalPort} | Fast={_options.FastAttackAttempts}/{_options.FastAttackSeconds}s | Medium={_options.MediumAttackAttempts}/{_options.MediumAttackMinutes}m | Hard={_options.HardLimitAttempts}/{_options.HardLimitWindowMinutes}m | UnblockAfter={_options.UnblockAfterDays}d | FirewallRetry={_options.FirewallRetryIntervalSeconds}s | CorrelationWindow={_options.RdpCorrelationWindowSeconds}s | TrustedNetworks={_options.TrustedNetworks.Count} | LogEveryFailure={_options.LogEveryFailure} | LogRdpCorrelationEvents={_options.LogRdpCorrelationEvents} | Heartbeat={_options.HeartbeatSeconds}s | MaxLog={_options.MaxLogFileSizeMb}MB | Retention={_options.LogRetentionDays}d");
         _log.Info($"STARTUP STATE | BlockedApplied={startupApplied} | BlockedPending={startupPending} | StateTotal={startupState.Count} | BaseDirectory={_options.BaseDirectory} | FirewallRule={_options.FirewallRuleName}");
         Log24HourStats("startup");
 
-        // Firewall problems must never prevent the detection service from starting.
         ReconcileFirewallState("startup");
 
         try
@@ -104,7 +109,7 @@ public sealed class Worker : BackgroundService
                     var firewallStatus = _options.DryRun
                         ? "DRY-RUN"
                         : (_firewall.TryCheckFirewallService(out var fwDetail) ? "RUNNING" : $"UNAVAILABLE ({fwDetail})");
-                    _log.Debug($"HEARTBEAT | Service alive | RDP port={_options.RdpLocalPort} | SecurityWatcher={(_securityWatcher?.Enabled == true ? "ON" : "OFF")} | RdpWatchers={rdpWatchersOn}/{_rdpWatchers.Count} | RecentRdpIPs={_recentRdpIps.Count} | BlockedApplied={applied} | BlockedPending={pending} | Firewall={firewallStatus} | DryRun={_options.DryRun}");
+                    _log.Debug($"HEARTBEAT | Version={version} | Service alive | RDP port={_options.RdpLocalPort} | SecurityWatcher={(_securityWatcher?.Enabled == true ? "ON" : "OFF")} | RdpWatchers={rdpWatchersOn}/{_rdpWatchers.Count} | RecentRdpIPs={_recentRdpIps.Count} | BlockedApplied={applied} | BlockedPending={pending} | Firewall={firewallStatus} | DryRun={_options.DryRun}");
                     Log24HourStats("heartbeat");
                     nextHeartbeat = now.Add(heartbeatEvery);
                 }
@@ -328,7 +333,10 @@ public sealed class Worker : BackgroundService
     private void AcceptFailure(FailureCandidate candidate, string detectionMode, string correlationReason)
     {
         _stats.RecordAcceptedFailure(candidate.Ip);
-        _log.Info($"RDP FAILURE ACCEPTED | Mode={detectionMode} | Correlation={correlationReason} | IP={candidate.Ip} | User={candidate.UserName} | Workstation={candidate.WorkstationName} | SourcePort={candidate.SourcePort} | LogonType={candidate.LogonType} | Auth={candidate.AuthPackage} | Status={candidate.Status} | SubStatus={candidate.SubStatus} | RecordId={candidate.RecordId}");
+        if (_options.LogEveryFailure)
+        {
+            _log.Info($"RDP FAILURE ACCEPTED | Mode={detectionMode} | Correlation={correlationReason} | IP={candidate.Ip} | User={candidate.UserName} | Workstation={candidate.WorkstationName} | SourcePort={candidate.SourcePort} | LogonType={candidate.LogonType} | Auth={candidate.AuthPackage} | Status={candidate.Status} | SubStatus={candidate.SubStatus} | RecordId={candidate.RecordId}");
+        }
 
         if (_detector.IsTrusted(candidate.Ip))
         {
@@ -392,8 +400,6 @@ public sealed class Worker : BackgroundService
             }
         }
 
-        // XML fields in some RDP providers may contain an IPv6 address as a complete value.
-        // Do not use yield inside try/catch: C# forbids yield return in a try block that has catch.
         try
         {
             var doc = XDocument.Parse(text);
@@ -408,7 +414,6 @@ public sealed class Worker : BackgroundService
         }
         catch
         {
-            // The IPv4 regex result is still useful if XML parsing fails.
         }
 
         return results;
@@ -521,7 +526,9 @@ public sealed class Worker : BackgroundService
                 watcher.Enabled = false;
                 watcher.Dispose();
             }
-            catch { }
+            catch
+            {
+            }
         }
         _rdpWatchers.Clear();
     }
