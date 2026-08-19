@@ -8,14 +8,21 @@ public sealed class FileLogger
 {
     private readonly object _sync = new();
     private readonly string _logFile;
+    private readonly string _logDirectory;
+    private readonly long _maxLogFileBytes;
+    private readonly int _retentionDays;
     private static readonly byte[] Utf8Bom = new byte[] { 0xEF, 0xBB, 0xBF };
 
     public FileLogger(IOptions<RdpGuardOptions> options)
     {
-        var dir = Environment.ExpandEnvironmentVariables(options.Value.BaseDirectory);
-        Directory.CreateDirectory(dir);
-        _logFile = Path.Combine(dir, "rdpguard.log");
+        var cfg = options.Value;
+        _logDirectory = Environment.ExpandEnvironmentVariables(cfg.BaseDirectory);
+        Directory.CreateDirectory(_logDirectory);
+        _logFile = Path.Combine(_logDirectory, "rdpguard.log");
+        _maxLogFileBytes = Math.Max(1, cfg.MaxLogFileSizeMb) * 1024L * 1024L;
+        _retentionDays = Math.Max(1, cfg.LogRetentionDays);
         EnsureUtf8Bom();
+        CleanupOldLogs();
     }
 
     public string LogFilePath => _logFile;
@@ -35,12 +42,16 @@ public sealed class FileLogger
                 return;
             }
 
-            var bytes = File.ReadAllBytes(_logFile);
-            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-                return;
+            using var read = new FileStream(_logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (read.Length >= 3)
+            {
+                Span<byte> prefix = stackalloc byte[3];
+                _ = read.Read(prefix);
+                if (prefix[0] == 0xEF && prefix[1] == 0xBB && prefix[2] == 0xBF)
+                    return;
+            }
 
-            // Existing versions wrote valid UTF-8 without BOM. Prefixing BOM makes
-            // Windows PowerShell 5.1 Get-Content detect the encoding correctly.
+            var bytes = File.ReadAllBytes(_logFile);
             using var stream = new FileStream(_logFile, FileMode.Create, FileAccess.Write, FileShare.Read);
             stream.Write(Utf8Bom, 0, Utf8Bom.Length);
             stream.Write(bytes, 0, bytes.Length);
@@ -54,8 +65,62 @@ public sealed class FileLogger
 
         lock (_sync)
         {
+            RotateIfNeeded(bytes.Length);
             using var stream = new FileStream(_logFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
             stream.Write(bytes, 0, bytes.Length);
+        }
+    }
+
+    private void RotateIfNeeded(int nextWriteBytes)
+    {
+        try
+        {
+            var currentLength = File.Exists(_logFile) ? new FileInfo(_logFile).Length : 0;
+            if (currentLength + nextWriteBytes <= _maxLogFileBytes)
+                return;
+
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var rotated = Path.Combine(_logDirectory, $"rdpguard-{stamp}.log");
+            var suffix = 1;
+            while (File.Exists(rotated))
+            {
+                rotated = Path.Combine(_logDirectory, $"rdpguard-{stamp}-{suffix++}.log");
+            }
+
+            if (File.Exists(_logFile))
+                File.Move(_logFile, rotated);
+
+            File.WriteAllBytes(_logFile, Utf8Bom);
+            CleanupOldLogs();
+        }
+        catch
+        {
+            // Logging must never crash the service. If rotation fails,
+            // continue appending to the active log file.
+        }
+    }
+
+    private void CleanupOldLogs()
+    {
+        try
+        {
+            var cutoff = DateTime.Now.AddDays(-_retentionDays);
+            foreach (var file in Directory.EnumerateFiles(_logDirectory, "rdpguard-*.log"))
+            {
+                try
+                {
+                    if (File.GetLastWriteTime(file) < cutoff)
+                        File.Delete(file);
+                }
+                catch
+                {
+                    // Retention cleanup is best-effort only.
+                }
+            }
+        }
+        catch
+        {
+            // Never fail service startup because old logs cannot be enumerated.
         }
     }
 }
