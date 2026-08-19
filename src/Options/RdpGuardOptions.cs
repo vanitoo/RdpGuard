@@ -3,14 +3,16 @@ namespace RdpGuard.Options;
 public sealed class RdpGuardOptions
 {
     public bool DryRun { get; set; } = true;
-    public bool LogEveryFailure { get; set; } = true;
+    public bool LogEveryFailure { get; set; } = false;
     public bool AcceptNlaLogonType3 { get; set; } = true;
     public bool RequireRdpCorrelationForNla { get; set; } = true;
-    public bool LogRdpCorrelationEvents { get; set; } = true;
+    public bool LogRdpCorrelationEvents { get; set; } = false;
     public int RdpCorrelationWindowSeconds { get; set; } = 15;
     public int NlaCorrelationDelayMilliseconds { get; set; } = 2000;
-    public int HeartbeatSeconds { get; set; } = 60;
+    public int HeartbeatSeconds { get; set; } = 600;
     public bool Log24HourStatistics { get; set; } = true;
+    public int MaxLogFileSizeMb { get; set; } = 25;
+    public int LogRetentionDays { get; set; } = 14;
     public int RdpLocalPort { get; set; } = 13389;
     public int FastAttackAttempts { get; set; } = 3;
     public int FastAttackSeconds { get; set; } = 30;
