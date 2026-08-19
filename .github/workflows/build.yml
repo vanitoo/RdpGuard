@@ -79,17 +79,12 @@ jobs:
         run: dotnet restore ./src/RdpGuard.csproj
 
       - name: Build
-        run: dotnet build ./src/RdpGuard.csproj --configuration Release --no-restore
+        shell: pwsh
+        run: dotnet build ./src/RdpGuard.csproj --configuration Release --no-restore -p:RdpGuardCommit=${{ github.sha }}
 
       - name: Publish win-x64
-        run: >-
-          dotnet publish ./src/RdpGuard.csproj
-          --configuration Release
-          --runtime win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          --output ./publish/win-x64
+        shell: pwsh
+        run: dotnet publish ./src/RdpGuard.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:RdpGuardCommit=${{ github.sha }} --output ./publish/win-x64
 
       - name: Add service scripts to published package
         shell: pwsh
