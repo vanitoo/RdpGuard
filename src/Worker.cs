@@ -45,11 +45,20 @@ public sealed class Worker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var version = Assembly.GetExecutingAssembly()
+        var informationalVersion = Assembly.GetExecutingAssembly()
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? Assembly.GetExecutingAssembly().GetName().Version?.ToString()
             ?? "unknown";
+        var plus = informationalVersion.IndexOf('+');
+        var version = plus >= 0 ? informationalVersion[..plus] : informationalVersion;
+        var commit = plus >= 0 && plus + 1 < informationalVersion.Length
+            ? informationalVersion[(plus + 1)..]
+            : "unknown";
+        if (commit.Length > 7) commit = commit[..7];
 
+        _log.BlankLine();
+        _log.Info($"Version={version}");
+        _log.Info($"Commit={commit}");
         _log.Info($"SERVICE STARTED | Version={version} | DryRun={_options.DryRun} | RDP port={_options.RdpLocalPort} | LogEveryFailure={_options.LogEveryFailure} | AcceptNlaLogonType3={_options.AcceptNlaLogonType3} | RequireRdpCorrelation={_options.RequireRdpCorrelationForNla} | CorrelationWindow={_options.RdpCorrelationWindowSeconds}s | Heartbeat={_options.HeartbeatSeconds}s");
 
         var startupState = _state.Snapshot();
@@ -508,7 +517,9 @@ public sealed class Worker : BackgroundService
     {
         if (!_options.Log24HourStatistics) return;
         var stats = _stats.Snapshot24Hours();
-        _log.Info($"24H STATS | Trigger={trigger} | Raw4625={stats.Raw4625} | RdpFailuresAccepted={stats.AcceptedFailures} | AttacksDetected={stats.AttacksDetected} | UniqueAttackerIPs={stats.UniqueAttackerIps} | FirewallApplied={stats.FirewallApplied} | FirewallPending={stats.FirewallPending}");
+        var current = _state.Snapshot();
+        var currentlyBlocked = current.Count(x => string.Equals(x.Status, "Applied", StringComparison.OrdinalIgnoreCase));
+        _log.Info($"24H STATS | Trigger={trigger} | Detections24h={stats.AttacksDetected} | UniqueAttackIPs24h={stats.UniqueAttackerIps} | RealBlocks24h={stats.FirewallApplied} | PendingBlocks24h={stats.FirewallPending} | CurrentlyBlocked={currentlyBlocked}");
     }
 
     private void DisposeWatchers()
