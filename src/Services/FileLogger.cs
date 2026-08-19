@@ -31,6 +31,7 @@ public sealed class FileLogger
     public void Warn(string message) => Write("WARN", message);
     public void Error(string message) => Write("ERROR", message);
     public void Debug(string message) => Write("DEBUG", message);
+    public void BlankLine() => WriteRaw(Environment.NewLine);
 
     private void EnsureUtf8Bom()
     {
@@ -60,9 +61,12 @@ public sealed class FileLogger
 
     private void Write(string level, string message)
     {
-        var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} | {level} | {message}";
-        var bytes = new UTF8Encoding(false).GetBytes(line + Environment.NewLine);
+        WriteRaw($"{DateTime.Now:yyyy-MM-dd HH:mm:ss} | {level} | {message}{Environment.NewLine}");
+    }
 
+    private void WriteRaw(string text)
+    {
+        var bytes = new UTF8Encoding(false).GetBytes(text);
         lock (_sync)
         {
             RotateIfNeeded(bytes.Length);
