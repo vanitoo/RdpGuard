@@ -4,20 +4,27 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
   pull_request:
     branches:
       - main
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Tag to build/release (example: v1.0.3). If missing, it will be created from current main.'
+      bump:
+        description: 'Version bump for manual run'
         required: false
-        type: string
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
+
+concurrency:
+  group: rdpguard-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -29,74 +36,106 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve release tag and build version
+      - name: Resolve automatic version
         id: meta
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $releaseTag = ''
-          $buildVersion = ''
-
           git fetch --tags --force
 
-          if ("${{ github.event_name }}" -eq 'workflow_dispatch' -and "${{ inputs.tag }}" -ne '') {
-            $releaseTag = "${{ inputs.tag }}".Trim()
-            if ($releaseTag -notmatch '^v\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
-              throw "Invalid tag '$releaseTag'. Expected format like v1.0.3"
-            }
-
-            $buildVersion = $releaseTag.Substring(1)
-            $existing = git tag -l $releaseTag
-
-            if ($existing) {
-              Write-Host "Tag $releaseTag exists; checking it out."
-              git checkout --force $releaseTag
-              if ($LASTEXITCODE -ne 0) { throw "Unable to checkout tag $releaseTag" }
-            }
-            else {
-              Write-Host "Tag $releaseTag does not exist; creating it from current main commit $env:GITHUB_SHA"
-              git config user.name 'github-actions[bot]'
-              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-              git tag -a $releaseTag -m "RdpGuard $releaseTag"
-              if ($LASTEXITCODE -ne 0) { throw "Unable to create tag $releaseTag" }
-              git push origin $releaseTag
-              if ($LASTEXITCODE -ne 0) { throw "Unable to push tag $releaseTag" }
-            }
-          }
-          elseif ("${{ github.ref }}" -like 'refs/tags/v*') {
-            $releaseTag = "${{ github.ref_name }}"
-            $buildVersion = $releaseTag.Substring(1)
-          }
-          elseif ("${{ github.event_name }}" -eq 'push' -and "${{ github.ref }}" -eq 'refs/heads/main') {
+          # Pull requests only build/test. They never create a tag or Release.
+          if ("${{ github.event_name }}" -eq 'pull_request') {
             [xml]$project = Get-Content ./src/RdpGuard.csproj -Raw
             $buildVersion = [string]$project.Project.PropertyGroup.Version
-            if ([string]::IsNullOrWhiteSpace($buildVersion)) { throw 'Version is missing in src/RdpGuard.csproj' }
-            $releaseTag = "v$buildVersion"
+            if ([string]::IsNullOrWhiteSpace($buildVersion)) { $buildVersion = '0.0.0' }
+            "release_tag=" >> $env:GITHUB_OUTPUT
+            "build_version=$buildVersion" >> $env:GITHUB_OUTPUT
+            "commit_sha=${{ github.sha }}" >> $env:GITHUB_OUTPUT
+            Write-Host "PR build only | Version=$buildVersion"
+            exit 0
+          }
 
-            $existing = git tag -l $releaseTag
-            if (-not $existing) {
-              Write-Host "Creating release tag $releaseTag for commit $env:GITHUB_SHA"
-              git config user.name 'github-actions[bot]'
-              git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-              git tag -a $releaseTag -m "RdpGuard $releaseTag"
-              git push origin $releaseTag
-              if ($LASTEXITCODE -ne 0) { throw "Unable to push tag $releaseTag" }
+          # Find the highest stable semantic-version tag vMAJOR.MINOR.PATCH.
+          $versions = @()
+          foreach ($tag in @(git tag --list 'v*')) {
+            if ($tag -match '^v(\d+)\.(\d+)\.(\d+)$') {
+              $versions += [PSCustomObject]@{
+                Tag = $tag
+                Major = [int]$Matches[1]
+                Minor = [int]$Matches[2]
+                Patch = [int]$Matches[3]
+              }
             }
-            else {
-              Write-Host "Tag $releaseTag already exists; release assets will be refreshed."
-            }
+          }
+
+          if ($versions.Count -eq 0) {
+            $major = 1
+            $minor = 0
+            $patch = 0
+            $previousTag = '<none>'
           }
           else {
-            [xml]$project = Get-Content ./src/RdpGuard.csproj -Raw
-            $buildVersion = [string]$project.Project.PropertyGroup.Version
+            $latest = $versions |
+              Sort-Object Major, Minor, Patch -Descending |
+              Select-Object -First 1
+            $major = $latest.Major
+            $minor = $latest.Minor
+            $patch = $latest.Patch
+            $previousTag = $latest.Tag
           }
 
-          Write-Host "Release tag: $releaseTag"
-          Write-Host "Build version: $buildVersion"
+          # Default: every push to main increments PATCH.
+          # Commit-message controls:
+          #   [minor] -> X.Y.Z becomes X.(Y+1).0
+          #   [major] -> X.Y.Z becomes (X+1).0.0
+          $bump = 'patch'
+          if ("${{ github.event_name }}" -eq 'workflow_dispatch') {
+            $requested = "${{ inputs.bump }}".Trim().ToLowerInvariant()
+            if ($requested -in @('patch','minor','major')) { $bump = $requested }
+          }
+          else {
+            $message = @'
+${{ github.event.head_commit.message }}
+'@
+            if ($message -match '(?i)\[major\]') { $bump = 'major' }
+            elseif ($message -match '(?i)\[minor\]') { $bump = 'minor' }
+          }
+
+          switch ($bump) {
+            'major' {
+              $major++
+              $minor = 0
+              $patch = 0
+            }
+            'minor' {
+              $minor++
+              $patch = 0
+            }
+            default {
+              if ($previousTag -eq '<none>') {
+                # First release starts at v1.0.0.
+              }
+              else {
+                $patch++
+              }
+            }
+          }
+
+          $buildVersion = "$major.$minor.$patch"
+          $releaseTag = "v$buildVersion"
+
+          if (git tag --list $releaseTag) {
+            throw "Calculated tag $releaseTag already exists. Refusing to overwrite a release tag."
+          }
+
+          Write-Host "Previous tag : $previousTag"
+          Write-Host "Bump         : $bump"
+          Write-Host "New version  : $buildVersion"
+          Write-Host "Release tag  : $releaseTag"
+
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
           "build_version=$buildVersion" >> $env:GITHUB_OUTPUT
+          "commit_sha=${{ github.sha }}" >> $env:GITHUB_OUTPUT
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -113,8 +152,10 @@ jobs:
           --configuration Release
           --no-restore
           -p:Version=${{ steps.meta.outputs.build_version }}
+          -p:AssemblyVersion=${{ steps.meta.outputs.build_version }}.0
+          -p:FileVersion=${{ steps.meta.outputs.build_version }}.0
           -p:InformationalVersion=${{ steps.meta.outputs.build_version }}
-          -p:RdpGuardCommit=${{ github.sha }}
+          -p:RdpGuardCommit=${{ steps.meta.outputs.commit_sha }}
 
       - name: Publish win-x64
         shell: pwsh
@@ -126,8 +167,10 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           -p:Version=${{ steps.meta.outputs.build_version }}
+          -p:AssemblyVersion=${{ steps.meta.outputs.build_version }}.0
+          -p:FileVersion=${{ steps.meta.outputs.build_version }}.0
           -p:InformationalVersion=${{ steps.meta.outputs.build_version }}
-          -p:RdpGuardCommit=${{ github.sha }}
+          -p:RdpGuardCommit=${{ steps.meta.outputs.commit_sha }}
           --output ./publish/win-x64
 
       - name: Add service scripts to published package
@@ -143,19 +186,32 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RdpGuard-win-x64
+          name: RdpGuard-win-x64-${{ steps.meta.outputs.build_version }}
           path: ./RdpGuard-win-x64.zip
           if-no-files-found: error
 
+      - name: Create and push release tag
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a $env:RELEASE_TAG "${{ github.sha }}" -m "RdpGuard $env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to create tag $env:RELEASE_TAG" }
+          git push origin $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { throw "Unable to push tag $env:RELEASE_TAG" }
+
       - name: Publish GitHub Release
-        if: steps.meta.outputs.release_tag != ''
+        if: github.event_name != 'pull_request'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host "Publishing release for tag $env:RELEASE_TAG"
 
           $assets = @(
             './RdpGuard-win-x64.zip',
@@ -163,16 +219,8 @@ jobs:
             './uninstall-service.ps1'
           )
 
-          gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host 'Release already exists; replacing assets.'
-            gh release upload $env:RELEASE_TAG @assets --clobber --repo "${{ github.repository }}"
-            if ($LASTEXITCODE -ne 0) { throw "gh release upload failed with exit code $LASTEXITCODE" }
-          }
-          else {
-            Write-Host 'Release does not exist; creating it.'
-            gh release create $env:RELEASE_TAG @assets --verify-tag --generate-notes --title "RdpGuard $env:RELEASE_TAG" --repo "${{ github.repository }}"
-            if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
-          }
+          Write-Host "Creating GitHub Release $env:RELEASE_TAG"
+          gh release create $env:RELEASE_TAG @assets --verify-tag --generate-notes --title "RdpGuard $env:RELEASE_TAG" --repo "${{ github.repository }}"
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
 
           gh release view $env:RELEASE_TAG --repo "${{ github.repository }}"
